@@ -94,8 +94,6 @@ class GraphicsView(QtWidgets.QGraphicsView):
         self._adding_line = False
         self._newlink = None
         self._dragging = False
-        self._wheel_zoom_focus = None
-        self._wheel_zoom_position = None
         self._grid_size = 75
         self._drawing_grid_size = 25
         self._drawing_grid_color = self.DEFAULT_DRAWING_GRID_COLOR
@@ -128,8 +126,6 @@ class GraphicsView(QtWidgets.QGraphicsView):
         if self.scene().sceneRect() == rect:
             return  # Zoom acknowledgments echo these unchanged dimensions.
         self.scene().setSceneRect(rect)
-        self._wheel_zoom_focus = None
-        self._wheel_zoom_position = None
         # Discard navigation-only padding when loading/resizing a project.
         self.setSceneRect(QtCore.QRectF())
 
@@ -209,8 +205,6 @@ class GraphicsView(QtWidgets.QGraphicsView):
         # reset zoom / scale
         self.resetTransform()
         self.setSceneRect(QtCore.QRectF())
-        self._wheel_zoom_focus = None
-        self._wheel_zoom_position = None
 
 
     def _loadSettings(self):
@@ -601,32 +595,19 @@ class GraphicsView(QtWidgets.QGraphicsView):
             if delta is not None and delta.x() == 0 and delta.y() != 0:
                 # CTRL is pressed then use the mouse wheel to zoom in or out.
                 position = event.position().toPoint()
-                if delta.y() > 0:
-                    if self._wheel_zoom_focus is None or position != self._wheel_zoom_position:
-                        self._wheel_zoom_focus = self.mapToScene(position)
-                    self._wheel_zoom_position = position
-                    focus = self._wheel_zoom_focus
-                else:
-                    # Widen the overview around the region being configured.
-                    center = self.viewport().rect().center()
-                    focus = self._wheel_zoom_focus
-                    if focus is None or (self.mapFromScene(focus) - center).manhattanLength() > 4:
-                        focus = self.mapToScene(center)
-                    self._wheel_zoom_focus = focus
-                    self._wheel_zoom_position = None
-                if self.scaleView(pow(2.0, (delta.y()/2) / 240.0), anchor=position, focus=focus):
+                # Smaller proportional steps; every event uses the current cursor.
+                if self.scaleView(pow(2.0, delta.y() / 960.0), anchor=position):
                     project = self._topology.project()
                     if project is not None:
                         project.setZoom(round(self.transform().m11() * 100))
                         project.update()
             event.accept()
         else:
-            self._wheel_zoom_position = None
             super().wheelEvent(event)
 
-    def scaleView(self, scale_factor, anchor=None, focus=None):
+    def scaleView(self, scale_factor, anchor=None):
         """
-        Scale the view, optionally centering the scene point chosen by the mouse.
+        Scale around the current cursor without moving its scene point on screen.
 
         Wheel zoom uses the event position rather than Qt's cached mouse anchor.
         View-only padding allows anchoring at scene edges and when the scaled
@@ -639,16 +620,17 @@ class GraphicsView(QtWidgets.QGraphicsView):
         if anchor is None:
             self.scale(scale_factor, scale_factor)
         else:
-            position = self.mapToScene(anchor) if focus is None else focus
+            position = self.mapToScene(anchor)
             previous_anchor = self.transformationAnchor()
             self.setTransformationAnchor(QtWidgets.QGraphicsView.ViewportAnchor.NoAnchor)
             try:
                 self.scale(scale_factor, scale_factor)
                 width, height = self.viewport().width() / factor, self.viewport().height() / factor
-                visible = QtCore.QRectF(position.x() - width / 2,
-                                       position.y() - height / 2, width, height)
+                visible = QtCore.QRectF(position.x() - anchor.x() / factor,
+                                       position.y() - anchor.y() / factor, width, height)
                 self.setSceneRect(self.sceneRect().united(visible.adjusted(-width, -height, width, height)))
-                self.centerOn(position)
+                correction = self.mapToScene(anchor) - position
+                self.translate(correction.x(), correction.y())
             finally:
                 self.setTransformationAnchor(previous_anchor)
         self._main_window.uiStatusBar.showMessage("Zoom: {}%".format(round(self.transform().m11() * 100)), 5000)
@@ -678,8 +660,6 @@ class GraphicsView(QtWidgets.QGraphicsView):
         :param event: QMouseEvent instance
         """
 
-        if event.position().toPoint() != self._wheel_zoom_position:
-            self._wheel_zoom_position = None
         if self._dragging:
             # This if statement event checks to see if the user is dragging the scene
             # if so it sets the value of the scene scroll bars based on the change between
