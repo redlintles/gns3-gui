@@ -74,6 +74,8 @@ class GraphicsView(QtWidgets.QGraphicsView):
     :param parent: parent widget
     """
 
+    navigationModeChanged = QtCore.Signal(str)
+
     # Class-level constants for default colors
     DEFAULT_DRAWING_GRID_COLOR = QtGui.QColor(208, 208, 208)  # #D0D0D0
     DEFAULT_NODE_GRID_COLOR = QtGui.QColor(190, 190, 190)     # #BEBEBE
@@ -93,6 +95,12 @@ class GraphicsView(QtWidgets.QGraphicsView):
         self._adding_ellipse = False
         self._adding_line = False
         self._newlink = None
+        self._navigation_mode = "hand"
+        self._selection_origin = None
+        self._selection_band = None
+        self._selection_previous = []
+        self._selection_before_press = []
+        self._selection_dragged = False
         self._dragging = False
         self._grid_size = 75
         self._drawing_grid_size = 25
@@ -112,6 +120,7 @@ class GraphicsView(QtWidgets.QGraphicsView):
 
         # set the custom flags for this view
         self.setDragMode(QtWidgets.QGraphicsView.DragMode.RubberBandDrag)
+        self.setCursor(QtCore.Qt.CursorShape.OpenHandCursor)
         self.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         self.setTransformationAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorViewCenter)
@@ -431,12 +440,59 @@ class GraphicsView(QtWidgets.QGraphicsView):
             self._newlink = None
             self.addLink(source_item.node(), source_port, destination_item.node(), destination_port)
 
+    def setNavigationMode(self, mode):
+        """Navigation affects empty canvas gestures; elements remain movable."""
+        if mode not in ("hand", "selection"):
+            raise ValueError("Unknown canvas navigation mode")
+        self._navigation_mode = mode
+        self.setCursor(QtCore.Qt.CursorShape.OpenHandCursor if mode == "hand"
+                       else QtCore.Qt.CursorShape.ArrowCursor)
+        self.navigationModeChanged.emit(mode)
+
+
+    def _updateSelectionRectangle(self, position):
+        rect = QtCore.QRect(self._selection_origin, position).normalized()
+        self._selection_band.setGeometry(rect)
+        if rect.width() < QtWidgets.QApplication.startDragDistance() and rect.height() < QtWidgets.QApplication.startDragDistance():
+            return
+        self._selection_dragged = True
+        path = QtGui.QPainterPath()
+        path.addPolygon(self.mapToScene(rect))
+        self.scene().setSelectionArea(path, self.viewportTransform())
+        for item in self._selection_previous:
+            item.setSelected(True)
+
+
     def mousePressEvent(self, event):
         """
         Handles all mouse press events.
 
         :param event: QMouseEvent instance
         """
+
+        adding_item = any((self._adding_link, self._adding_note, self._adding_rectangle, self._adding_ellipse, self._adding_line))
+        if not adding_item and event.button() == QtCore.Qt.MouseButton.RightButton:
+            self.setNavigationMode("selection")
+            self._selection_origin = event.position().toPoint()
+            self._selection_dragged = False
+            self._selection_before_press = self.scene().selectedItems()
+            self._selection_previous = (self.scene().selectedItems() if
+                event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier else [])
+            self.scene().clearSelection()
+            self._selection_band = QtWidgets.QRubberBand(QtWidgets.QRubberBand.Shape.Rectangle, self.viewport())
+            self._selection_band.setGeometry(QtCore.QRect(self._selection_origin, QtCore.QSize()))
+            self._selection_band.show()
+            event.accept()
+            return
+        if (not adding_item and
+                event.button() == QtCore.Qt.MouseButton.LeftButton and
+                self.itemAt(event.position().toPoint()) is None):
+            self.setNavigationMode("hand")
+            self._last_mouse_position = self.mapFromGlobal(event.globalPosition())
+            self._dragging = True
+            self.setCursor(QtCore.Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
 
         is_not_link = True
         is_not_logo = True
@@ -520,6 +576,12 @@ class GraphicsView(QtWidgets.QGraphicsView):
         :param event: QContextMenuEvent instance
         """
 
+        if event.reason() == QtGui.QContextMenuEvent.Reason.Mouse:
+            # Right-release owns the rectangle selection and opens exactly one menu.
+            event.accept()
+            return
+
+
         is_not_link = True
         is_not_logo = True
 
@@ -559,6 +621,37 @@ class GraphicsView(QtWidgets.QGraphicsView):
 
         :param: QMouseEvent instance
         """
+
+        if self._selection_origin is not None and event.button() == QtCore.Qt.MouseButton.RightButton:
+            self._updateSelectionRectangle(event.position().toPoint())
+            if not self._selection_dragged:
+                # A stationary right click is a context request, never a
+                # rectangle selection. Restore a pre-existing multi-selection.
+                item = self.itemAt(event.position().toPoint())
+                if isinstance(item, LabelItem):
+                    item = item.parentItem()
+                self.scene().clearSelection()
+                if item in self._selection_before_press:
+                    for selected in self._selection_before_press:
+                        selected.setSelected(True)
+                elif item is not None and not isinstance(item, (LinkItem, LogoItem)):
+                    item.setSelected(True)
+            self._selection_band.hide()
+            self._selection_band.deleteLater()
+            self._selection_band = None
+            self._selection_origin = None
+            self._selection_previous = []
+            self._selection_before_press = []
+            self.toggleUiDeviceMenu()
+            event.accept()
+            if self.scene().selectedItems():
+                self._showDeviceContextualMenu(event.globalPosition().toPoint())
+            return
+        if self._dragging:
+            self._dragging = False
+            self.setNavigationMode(self._navigation_mode)
+            event.accept()
+            return
 
         for item in self.scene().selectedItems():
             if isinstance(item, NodeItem):
@@ -628,6 +721,11 @@ class GraphicsView(QtWidgets.QGraphicsView):
         :param event: QMouseEvent instance
         """
 
+        if self._selection_origin is not None:
+            self._updateSelectionRectangle(event.position().toPoint())
+            event.accept()
+            return
+
         if self._dragging:
             # This if statement event checks to see if the user is dragging the scene
             # if so it sets the value of the scene scroll bars based on the change between
@@ -639,6 +737,8 @@ class GraphicsView(QtWidgets.QGraphicsView):
             hBar.setValue(int(hBar.value() + (delta.x() if QtWidgets.QApplication.isRightToLeft() else -delta.x())))
             vBar.setValue(int(vBar.value() - delta.y()))
             self._last_mouse_position = mapped_global_pos
+            event.accept()
+            return
         if self._adding_link and self._newlink and self._newlink in self.scene().items():
             # update the mouse position when the user is adding a link.
             self._newlink.setMousePoint(self.mapToScene(event.position().toPoint()))
@@ -1692,6 +1792,19 @@ class GraphicsView(QtWidgets.QGraphicsView):
         self._drawing_grid_color = self.DEFAULT_DRAWING_GRID_COLOR
         self._node_grid_color = self.DEFAULT_NODE_GRID_COLOR
         self.viewport().update()
+
+    def focusOutEvent(self, event):
+        if self._selection_band is not None:
+            self._selection_band.hide()
+            self._selection_band.deleteLater()
+            self._selection_band = None
+            self._selection_origin = None
+            self._selection_previous = []
+        if self._dragging:
+            self._dragging = False
+            self.setNavigationMode(self._navigation_mode)
+        super().focusOutEvent(event)
+
 
     def drawBackground(self, painter, rect):
         super().drawBackground(painter, rect)
