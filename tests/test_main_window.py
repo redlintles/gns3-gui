@@ -61,4 +61,3 @@ def test_navigation_toolbar_tracks_view_mode(real_main_window):
     window.uiGraphicsView.setNavigationMode('hand')
     assert window.uiHandAction.isChecked()
     assert not window.uiSelectionAction.isChecked()
-
