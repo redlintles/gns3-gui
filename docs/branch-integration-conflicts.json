@@ -1,0 +1,40 @@
+[
+  {
+    "branch": "codex/fix-async-requests",
+    "conflicts": []
+  },
+  {
+    "branch": "codex/feature-geometry",
+    "conflicts": []
+  },
+  {
+    "branch": "codex/feature-typography",
+    "conflicts": [
+      "gns3/graphics_view.py"
+    ]
+  },
+  {
+    "branch": "codex/feature-zoom",
+    "conflicts": []
+  },
+  {
+    "branch": "codex/feature-image-importing",
+    "conflicts": [
+      "gns3/graphics_view.py"
+    ]
+  },
+  {
+    "branch": "codex/feature-hand-tool",
+    "conflicts": [
+      "gns3/graphics_view.py"
+    ]
+  },
+  {
+    "branch": "codex/feature-container",
+    "conflicts": [
+      "gns3/graphics_view.py",
+      "gns3/main_window.py",
+      "tests/test_main_window.py"
+    ]
+  }
+]
